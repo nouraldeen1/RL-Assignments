@@ -1,1 +1,24 @@
-{}
+{
+    "PPO_Acrobot-v1": {
+        "config": {
+            "gamma": 0.99,
+            "batch_size": 64,
+            "buffer_size": 4096,
+            "decay_rate": 0.99,
+            "learning_rate": 0.0003
+        },
+        "path": "saved_models/PPO_Acrobot-v1_best.pth",
+        "score": -83.0
+    },
+    "PPO_MountainCar-v0": {
+        "config": {
+            "learning_rate": 0.001,
+            "gamma": 0.995,
+            "batch_size": 128,
+            "buffer_size": 2048,
+            "decay_rate": 0.9
+        },
+        "path": "saved_models/PPO_MountainCar-v0_best.pth",
+        "score": -200.0
+    }
+}

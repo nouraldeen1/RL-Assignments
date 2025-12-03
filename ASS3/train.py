@@ -74,6 +74,7 @@ def get_hyperparameter_search_space(algo_name, env_name):
         # The "Trap": Sparse rewards require extreme farsightedness and aggressive learning
         search_space['gamma'] = [0.995, 0.999]  # MUST be close to 1.0 for long-term credit
         search_space['learning_rate'] = [1e-3, 2e-3]  # Aggressive updates when signal arrives
+        search_space['decay_rate'] = [1.0]  #mountain
         search_space['batch_size'] = [128, 256]  # Large batches to stabilize noisy gradients
         search_space['buffer_size'] = [2048] if algo_name != "SAC" else [50000, 100000]  # Capture full episodes
     elif env_name == "Pendulum-v1":

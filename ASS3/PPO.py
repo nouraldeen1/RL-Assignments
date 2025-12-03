@@ -22,35 +22,38 @@ class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dim, is_continuous, action_std_init=0.6):
         super(ActorCritic, self).__init__()
         self.is_continuous = is_continuous
-        self.action_dim = action_dim  # <--- FIXED: Saved for use in evaluate
+        self.action_dim = action_dim
+
+        # Use a larger network for more complex problems
+        hidden_dim = 256 
 
         if is_continuous:
             self.action_var = torch.full((action_dim,), action_std_init * action_std_init)
             self.actor = nn.Sequential(
-                nn.Linear(state_dim, 64),
+                nn.Linear(state_dim, hidden_dim),
                 nn.Tanh(),
-                nn.Linear(64, 64),
+                nn.Linear(hidden_dim, hidden_dim),
                 nn.Tanh(),
-                nn.Linear(64, action_dim),
+                nn.Linear(hidden_dim, action_dim),
                 nn.Tanh() 
             )
         else:
             self.actor = nn.Sequential(
-                nn.Linear(state_dim, 64),
+                nn.Linear(state_dim, hidden_dim),
                 nn.Tanh(),
-                nn.Linear(64, 64),
+                nn.Linear(hidden_dim, hidden_dim),
                 nn.Tanh(),
-                nn.Linear(64, action_dim),
+                nn.Linear(hidden_dim, action_dim),
                 nn.Softmax(dim=-1)
             )
             
         # Critic
         self.critic = nn.Sequential(
-            nn.Linear(state_dim, 64),
+            nn.Linear(state_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(64, 64),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(64, 1)
+            nn.Linear(hidden_dim, 1)
         )
 
     def act(self, state, device):
