@@ -19,13 +19,10 @@ class PPOMemory:
         del self.is_terminals[:]
 
 class ActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, is_continuous, action_std_init=0.6):
+    def __init__(self, state_dim, action_dim, is_continuous, hidden_dim=256, action_std_init=0.6):
         super(ActorCritic, self).__init__()
         self.is_continuous = is_continuous
         self.action_dim = action_dim
-
-        # Use a larger network for more complex problems
-        hidden_dim = 256 
 
         if is_continuous:
             self.action_var = torch.full((action_dim,), action_std_init * action_std_init)
@@ -98,12 +95,14 @@ class PPOAgent:
         self.eps_clip = config.get('eps_clip', 0.2)
         self.K_epochs = config.get('K_epochs', 40)
         self.entropy_coef = config.get('entropy_coef', 0.01)  # Entropy coefficient for exploration
+        hidden_dim = config.get('hidden_dim', 256)
+        action_std_init = config.get('action_std_init', 0.6)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         self.buffer = PPOMemory()
-        self.policy = ActorCritic(state_dim, action_dim, is_continuous).to(self.device)
+        self.policy = ActorCritic(state_dim, action_dim, is_continuous, hidden_dim, action_std_init).to(self.device)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.lr)
-        self.policy_old = ActorCritic(state_dim, action_dim, is_continuous).to(self.device)
+        self.policy_old = ActorCritic(state_dim, action_dim, is_continuous, hidden_dim, action_std_init).to(self.device)
         self.policy_old.load_state_dict(self.policy.state_dict())
         
         self.MseLoss = nn.MSELoss()

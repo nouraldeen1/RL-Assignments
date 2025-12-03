@@ -305,6 +305,7 @@ def test_best_model(model_type, env_name, config, model_path):
     elif model_type == "PPO":
         agent = PPOAgent(state_dim, action_dim, config, is_continuous)
         agent.policy.load_state_dict(torch.load(model_path))
+        agent.policy_old.load_state_dict(agent.policy.state_dict()) # Sync old policy for action selection
     elif model_type == "A2C":
         agent = A2CAgent(state_dim, action_dim, config, is_continuous)
         agent.network.load_state_dict(torch.load(model_path))
@@ -394,6 +395,8 @@ if __name__ == "__main__":
     # PHASE 1: OPTIMIZATION LOOP
     # ==========================
     print("\n=== PHASE 1: HYPERPARAMETER OPTIMIZATION ===")
+    trained_this_run = []  # Track what was trained in this session
+    
     for env_name in environments:
         for model in models:
             best_score = -float('inf')
@@ -430,11 +433,17 @@ if __name__ == "__main__":
                         agent.save(save_path)
                         
                         # Update Registry
-                        best_registry[f"{model}_{env_name}"] = {
+                        key = f"{model}_{env_name}"
+                        best_registry[key] = {
                             "config": config,
                             "path": save_path,
                             "score": best_score
                         }
+                        
+                        # Track that this model was trained in this run
+                        if key not in trained_this_run:
+                            trained_this_run.append(key)
+                        
                         print(f"   ★ NEW BEST! Score: {best_score:.2f} | Saved to {save_path}")
                         
                 except Exception as e:
@@ -451,19 +460,26 @@ if __name__ == "__main__":
     # ==========================
     print("\n=== PHASE 2: FINAL TESTING & RECORDING ===")
 
-    # Iterate through the registry of winners
-    for key, data in best_registry.items():
-        # Parse key "SAC_CartPole-v1" -> "SAC", "CartPole-v1"
-        parts = key.split('_')
-        model_type = parts[0]
-        env_name = "_".join(parts[1:])
+    # Only test models that were trained in this run
+    if not trained_this_run:
+        print("⚠ No models were trained in this run. Skipping Phase 2.")
+    else:
+        print(f"📋 Testing {len(trained_this_run)} model(s) trained in this run: {trained_this_run}")
+        
+        for key in trained_this_run:
+            data = best_registry[key]
+            
+            # Parse key "SAC_CartPole-v1" -> "SAC", "CartPole-v1"
+            parts = key.split('_')
+            model_type = parts[0]
+            env_name = "_".join(parts[1:])
 
-        config = data['config']
-        path = data['path']
+            config = data['config']
+            path = data['path']
 
-        try:
-            test_best_model(model_type, env_name, config, path)
-        except Exception as e:
-            print(f"!!! Error testing {key}: {e}")
+            try:
+                test_best_model(model_type, env_name, config, path)
+            except Exception as e:
+                print(f"!!! Error testing {key}: {e}")
 
     print("\n=== ALL ASSIGNMENT TASKS COMPLETE ===")
