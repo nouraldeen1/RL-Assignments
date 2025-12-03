@@ -24,10 +24,10 @@ RANDOM_SAMPLES = 12  # Number of random samples if using random strategy
 ENABLE_EARLY_STOPPING = True  # Prune bad runs early
 EARLY_STOP_EPISODE = 75  # Check performance at this episode
 EARLY_STOP_THRESHOLDS = {  # Minimum reward to continue
-    "CartPole-v1": 100,  # Increased from 50 - should reach 100+ by episode 50 if learning
-    "Acrobot-v1": -350,
+    "CartPole-v1": 80,  # Increased from 50 - should reach 100+ by episode 50 if learning
+    "Acrobot-v1": -400,
     "MountainCar-v0": -199,
-    "Pendulum-v1": -1200,
+    "Pendulum-v1": -1400,
 }
 
 def get_hyperparameter_search_space(algo_name, env_name):
@@ -71,9 +71,11 @@ def get_hyperparameter_search_space(algo_name, env_name):
         search_space['gamma'] = [0.99]
         search_space['learning_rate'] = [5e-4, 3e-4]
     elif env_name == "MountainCar-v0":
-        # The "Trap": Sparse rewards require extreme farsightedness
-        search_space['gamma'] = [0.995, 0.999]  # MUST be close to 1.0
-        search_space['learning_rate'] = [1e-4, 1e-5]  # Low LR to prevent unlearning
+        # The "Trap": Sparse rewards require extreme farsightedness and aggressive learning
+        search_space['gamma'] = [0.995, 0.999]  # MUST be close to 1.0 for long-term credit
+        search_space['learning_rate'] = [1e-3, 2e-3]  # Aggressive updates when signal arrives
+        search_space['batch_size'] = [128, 256]  # Large batches to stabilize noisy gradients
+        search_space['buffer_size'] = [2048] if algo_name != "SAC" else [50000, 100000]  # Capture full episodes
     elif env_name == "Pendulum-v1":
         # Continuous, smooth dynamics
         search_space['gamma'] = [0.99]
@@ -83,43 +85,38 @@ def get_hyperparameter_search_space(algo_name, env_name):
 
 def get_sequential_configs(algo_name, env_name):
     """
-    Sequential tuning: Tune one hyperparameter at a time.
+    Sequential tuning: Tune one hyperparameter at a time, using the correct search space.
     Returns a smaller, focused set of configurations.
     """
     configs = []
+    # Get the full, correct search space for the algo/env pair
+    search_space = get_hyperparameter_search_space(algo_name, env_name)
+
+    # Establish a base config using the FIRST value from each search space option
+    base_config = {key: value[0] for key, value in search_space.items()}
     
     # Stage 1: Tune Learning Rate (most critical)
-    base_config = {
-        'gamma': 0.99,
-        'batch_size': 64 if algo_name == "SAC" else 64,
-        'buffer_size': 2048 if algo_name != "SAC" else 50000,
-        'decay_rate': 1.0 if algo_name == "SAC" else 0.99,
-    }
-    
-    # Test 3 learning rates
-    for lr in [1e-3, 3e-4, 1e-4]:
+    for lr in search_space.get('learning_rate', [base_config['learning_rate']]):
         config = base_config.copy()
         config['learning_rate'] = lr
         configs.append(config)
     
-    # Stage 2: Tune buffer/memory size with best LR (use middle value)
-    best_lr = 3e-4
-    buffer_sizes = [50000, 100000] if algo_name == "SAC" else [2048, 4096]
-    for buf_size in buffer_sizes:
+    # Stage 2: Tune buffer/memory size with the established base LR
+    for buf_size in search_space.get('buffer_size', [base_config['buffer_size']]):
         config = base_config.copy()
-        config['learning_rate'] = best_lr
         config['buffer_size'] = buf_size
         configs.append(config)
     
-    # Stage 3: Environment-specific gamma tuning
-    if env_name == "MountainCar-v0":
-        for gamma in [0.995, 0.999]:
-            config = base_config.copy()
-            config['learning_rate'] = best_lr
-            config['gamma'] = gamma
-            configs.append(config)
+    # Stage 3: Tune gamma with the established base LR
+    for gamma in search_space.get('gamma', [base_config['gamma']]):
+        config = base_config.copy()
+        config['gamma'] = gamma
+        configs.append(config)
+        
+    # Remove duplicates that might have been created
+    unique_configs = [dict(t) for t in {tuple(d.items()) for d in configs}]
     
-    return configs
+    return unique_configs
 
 def make_env(env_name, model_type, render_mode=None):
     env = gym.make(env_name, render_mode=render_mode)
@@ -213,15 +210,19 @@ def train_and_validate(model_type, env_name, config):
         
         # Early stopping check
         if ENABLE_EARLY_STOPPING and episode == EARLY_STOP_EPISODE:
-            threshold = EARLY_STOP_THRESHOLDS.get(env_name, -float('inf'))
-            recent_avg = np.mean(episode_rewards[-min(20, len(episode_rewards)):])
-            if recent_avg < threshold:
-                print(f"      ⚠ EARLY STOP at episode {episode}: Avg reward {recent_avg:.2f} < threshold {threshold}")
-                early_stopped = True
-                wandb.log({"early_stopped": 1, "stop_episode": episode, "stop_avg_reward": recent_avg})
-                break
+            # MountainCar needs more time to learn - skip early stopping
+            if env_name == "MountainCar-v0" and episode < 100:
+                print(f"      ⏭ Skipping early stop for MountainCar (needs more exploration time)")
             else:
-                print(f"      ✓ Passed early stop check: Avg reward {recent_avg:.2f} >= threshold {threshold}")
+                threshold = EARLY_STOP_THRESHOLDS.get(env_name, -float('inf'))
+                recent_avg = np.mean(episode_rewards[-min(20, len(episode_rewards)):])
+                if recent_avg < threshold:
+                    print(f"      ⚠ EARLY STOP at episode {episode}: Avg reward {recent_avg:.2f} < threshold {threshold}")
+                    early_stopped = True
+                    wandb.log({"early_stopped": 1, "stop_episode": episode, "stop_avg_reward": recent_avg})
+                    break
+                else:
+                    print(f"      ✓ Passed early stop check: Avg reward {recent_avg:.2f} >= threshold {threshold}")
         
         # Log metrics to wandb
         log_dict = {
@@ -378,7 +379,15 @@ if __name__ == "__main__":
     environments = [args.env] if args.env else all_environments
     models = [args.algo] if args.algo else all_models
 
-    best_registry = {} # To store info about the winners
+    # Load existing registry if it exists, otherwise create new one
+    registry_path = "best_configs/final_best_registry.json"
+    if os.path.exists(registry_path):
+        with open(registry_path, "r") as f:
+            best_registry = json.load(f)
+        print(f"📂 Loaded existing registry with {len(best_registry)} entries")
+    else:
+        best_registry = {}
+        print("📝 Creating new registry")
 
     # ==========================
     # PHASE 1: OPTIMIZATION LOOP
