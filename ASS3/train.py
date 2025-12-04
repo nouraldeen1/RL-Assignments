@@ -54,7 +54,7 @@ def get_hyperparameter_search_space(algo_name, env_name):
         # On-Policy: Needs longer rollouts for stability
         search_space['buffer_size'] = [2048, 4096]
         search_space['batch_size'] = [64, 128]
-        search_space['decay_rate'] = [0.9, 0.95, 0.99]  # Clip Range decay
+        search_space['decay_rate'] = [0.995, 0.999, 1.0]  # Entropy decay - needs to be very slow
     elif algo_name == "SAC":
         # Off-Policy: Huge Replay Buffer, Larger Batches
         search_space['buffer_size'] = [50000, 100000]
@@ -78,9 +78,13 @@ def get_hyperparameter_search_space(algo_name, env_name):
         search_space['batch_size'] = [128, 256]  # Large batches to stabilize noisy gradients
         search_space['buffer_size'] = [2048] if algo_name != "SAC" else [50000, 100000]  # Capture full episodes
     elif env_name == "Pendulum-v1":
-        # Continuous, smooth dynamics
-        search_space['gamma'] = [0.99]
-        search_space['learning_rate'] = [1e-3, 3e-4]
+        # Continuous control with swing-up challenge: needs smooth gradients and sustained exploration
+        # Short horizon (200 steps) doesn't need high gamma like MountainCar
+        search_space['gamma'] = [0.95, 0.98]  # Focus on immediate swing-up, not long-term credit
+        search_space['learning_rate'] = [3e-4, 1e-4]  # Conservative rates for stable continuous control
+        search_space['batch_size'] = [128]  # Larger batches smooth noisy continuous action gradients
+        if algo_name == "PPO":
+            search_space['decay_rate'] = [0.99, 1.0]  # Critical: keep action variance alive for swing-up exploration
     
     return search_space
 

@@ -1,24 +1,46 @@
 {
     "PPO_Acrobot-v1": {
         "config": {
+            "learning_rate": 0.0005,
             "gamma": 0.99,
             "batch_size": 64,
-            "buffer_size": 4096,
-            "decay_rate": 0.99,
-            "learning_rate": 0.0003
-        },
-        "path": "saved_models/PPO_Acrobot-v1_best.pth",
-        "score": -83.0
-    },
-    "PPO_MountainCar-v0": {
-        "config": {
-            "learning_rate": 0.001,
-            "gamma": 0.995,
-            "batch_size": 128,
             "buffer_size": 2048,
             "decay_rate": 0.9
         },
+        "path": "saved_models/PPO_Acrobot-v1_best.pth",
+        "score": -73.8
+    },
+    "PPO_MountainCar-v0": {
+        "config": {
+            "learning_rate": 0.002,
+            "gamma": 0.995,
+            "batch_size": 128,
+            "buffer_size": 2048,
+            "decay_rate": 1.0
+        },
         "path": "saved_models/PPO_MountainCar-v0_best.pth",
-        "score": -200.0
+        "score": -152.4
+    },
+    "PPO_Pendulum-v1": {
+        "config": {
+            "learning_rate": 0.0003,
+            "gamma": 0.95,
+            "batch_size": 128,
+            "buffer_size": 2048,
+            "decay_rate": 0.99
+        },
+        "path": "saved_models/PPO_Pendulum-v1_best.pth",
+        "score": -960.5526212900899
+    },
+    "PPO_CartPole-v1": {
+        "config": {
+            "learning_rate": 0.001,
+            "gamma": 0.98,
+            "batch_size": 64,
+            "buffer_size": 2048,
+            "decay_rate": 0.9
+        },
+        "path": "saved_models/PPO_CartPole-v1_best.pth",
+        "score": 500.0
     }
 }
