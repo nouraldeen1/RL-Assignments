@@ -1,0 +1,37 @@
+{
+  "env_name": "LunarLander-v3",
+  "algorithm": "PPO",
+  "test_avg_reward": 116.38421683008677,
+  "config": {
+    "learning_rate": 0.0003,
+    "buffer_size": 256,
+    "batch_size": 64,
+    "K_epochs": 10,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "eps_clip": 0.2,
+    "entropy_coef": 0.01,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "target_kl": 0.02,
+    "decay_rate": 0.995,
+    "hidden_dim": 256,
+    "action_std_init": 0.6,
+    "exploit_threshold": 150,
+    "exploit_lr": 5e-05,
+    "policy_kwargs": {
+      "net_arch": [
+        {
+          "pi": [
+            256,
+            256
+          ],
+          "vf": [
+            256,
+            256
+          ]
+        }
+      ]
+    }
+  }
+}

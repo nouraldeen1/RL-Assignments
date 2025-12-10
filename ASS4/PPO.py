@@ -95,35 +95,47 @@ class ActorCritic(nn.Module):
             self.critic = nn.Sequential(*critic_layers)
 
         else:
-            # Original MLP path for vector observations
+            # MLP path for vector observations - use net_arch if provided
+            pi_arch = None
+            vf_arch = None
+            if isinstance(net_arch, dict):
+                pi_arch = net_arch.get('pi', None)
+                vf_arch = net_arch.get('vf', None)
+
             if is_continuous:
                 self.action_var = torch.full((action_dim,), action_std_init * action_std_init)
-                # Output raw means (no final tanh) — we'll squash sampled actions later
-                self.actor = nn.Sequential(
-                    nn.Linear(state_dim, hidden_dim),
-                    nn.Tanh(),
-                    nn.Linear(hidden_dim, hidden_dim),
-                    nn.Tanh(),
-                    nn.Linear(hidden_dim, action_dim)
-                )
+                # Build actor with configurable architecture
+                actor_layers = []
+                last_dim = state_dim
+                arch = pi_arch if pi_arch is not None else [hidden_dim, hidden_dim]
+                for h in arch:
+                    actor_layers.append(nn.Linear(last_dim, h))
+                    actor_layers.append(nn.Tanh())
+                    last_dim = h
+                actor_layers.append(nn.Linear(last_dim, action_dim))
+                self.actor = nn.Sequential(*actor_layers)
             else:
-                self.actor = nn.Sequential(
-                    nn.Linear(state_dim, hidden_dim),
-                    nn.Tanh(),
-                    nn.Linear(hidden_dim, hidden_dim),
-                    nn.Tanh(),
-                    nn.Linear(hidden_dim, action_dim),
-                    nn.Softmax(dim=-1)
-                )
+                actor_layers = []
+                last_dim = state_dim
+                arch = pi_arch if pi_arch is not None else [hidden_dim, hidden_dim]
+                for h in arch:
+                    actor_layers.append(nn.Linear(last_dim, h))
+                    actor_layers.append(nn.Tanh())
+                    last_dim = h
+                actor_layers.append(nn.Linear(last_dim, action_dim))
+                actor_layers.append(nn.Softmax(dim=-1))
+                self.actor = nn.Sequential(*actor_layers)
 
-            # Critic
-            self.critic = nn.Sequential(
-                nn.Linear(state_dim, hidden_dim),
-                nn.Tanh(),
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.Tanh(),
-                nn.Linear(hidden_dim, 1)
-            )
+            # Critic with configurable architecture
+            critic_layers = []
+            last_dim = state_dim
+            arch = vf_arch if vf_arch is not None else [hidden_dim, hidden_dim]
+            for h in arch:
+                critic_layers.append(nn.Linear(last_dim, h))
+                critic_layers.append(nn.Tanh())
+                last_dim = h
+            critic_layers.append(nn.Linear(last_dim, 1))
+            self.critic = nn.Sequential(*critic_layers)
 
     def act(self, state, device):
         # Handle image inputs (ensure shape is BxCxHxW)
@@ -139,6 +151,10 @@ class ActorCritic(nn.Module):
             else:
                 img = state
 
+            # CRITICAL: Normalize image to [0, 1] range
+            if img.max() > 1.0:
+                img = img / 255.0
+            
             feats_conv = self.encoder(img.to(device))
             feats = self.encoder_proj(feats_conv)
             if self.is_continuous:
@@ -197,6 +213,10 @@ class ActorCritic(nn.Module):
             if state.dim() == 4 and state.shape[1] not in (1, 3):
                 # assume NHWC -> NCHW
                 state = state.permute(0, 3, 1, 2)
+            
+            # CRITICAL: Normalize image to [0, 1] range
+            if state.max() > 1.0:
+                state = state / 255.0
 
             feats_conv = self.encoder(state.to(device))
             feats = self.encoder_proj(feats_conv)
@@ -283,6 +303,9 @@ class PPOAgent:
         if isinstance(net_arch, list) and len(net_arch) > 0 and isinstance(net_arch[0], dict):
             net_arch = net_arch[0]
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f">>> Using device: {self.device}")
+        if torch.cuda.is_available():
+            print(f">>> GPU: {torch.cuda.get_device_name(0)}")
         
         self.buffer = PPOMemory()
         # Pass encoder_feature_dim and net_arch into ActorCritic when applicable
@@ -291,9 +314,14 @@ class PPOAgent:
         self.policy_old = ActorCritic(state_dim, action_dim, is_continuous, hidden_dim, action_std_init, encoder_feature_dim, net_arch).to(self.device)
         self.policy_old.load_state_dict(self.policy.state_dict())
         
-        self.MseLoss = nn.SmoothL1Loss()  # Huber loss for better stability
+        self.MseLoss = nn.SmoothL1Loss()
     def save(self, filename):
         torch.save(self.policy.state_dict(), filename)
+    
+    def load(self, filename):
+        self.policy.load_state_dict(torch.load(filename, map_location=self.device))
+        self.policy_old.load_state_dict(self.policy.state_dict())
+    
     def select_action(self, state):
         with torch.no_grad():
             state = torch.FloatTensor(state).to(self.device)
@@ -337,7 +365,7 @@ class PPOAgent:
         # Get state values for all states (no grad)
         with torch.no_grad():
             _, state_values, _ = self.policy.evaluate(old_states, old_actions, self.device)
-        state_values = torch.squeeze(state_values).detach()
+        state_values = state_values.view(-1).detach()
 
         # Compute GAE advantages
         advantages = torch.zeros_like(rewards).to(self.device)
@@ -377,7 +405,9 @@ class PPOAgent:
                 mb_returns = returns[mb_idx]
 
                 logprobs_new, state_values_new, dist_entropy = self.policy.evaluate(mb_states, mb_actions, self.device)
-                state_values_new = torch.squeeze(state_values_new)
+                # Ensure state_values_new has same shape as mb_returns
+                state_values_new = state_values_new.view(-1)
+                mb_returns_flat = mb_returns.view(-1)
 
                 ratios = torch.exp(logprobs_new - mb_logprobs.detach())
                 surr1 = ratios * mb_advantages
@@ -386,7 +416,7 @@ class PPOAgent:
                 # Policy loss
                 policy_loss = -torch.min(surr1, surr2).mean()
                 # Value loss
-                value_loss = self.MseLoss(state_values_new, mb_returns)
+                value_loss = self.MseLoss(state_values_new, mb_returns_flat)
                 # Entropy
                 entropy_loss = dist_entropy.mean()
 
@@ -396,10 +426,7 @@ class PPOAgent:
                 loss.backward()
                 # Gradient clipping if requested
                 if self.max_grad_norm is not None:
-                    try:
-                        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                    except Exception:
-                        pass
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.optimizer.step()
                 loss_item = loss.item()
 
