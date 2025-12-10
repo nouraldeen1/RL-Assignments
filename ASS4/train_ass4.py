@@ -92,7 +92,7 @@ def default_config_for_env(env_name):
         # This config achieved 211.71 avg reward and solved in ~2500 episodes
         return {
             'learning_rate': 2.5e-4,      # Slightly reduced for smoother updates
-            'lr_decay': True,             # Enable linear LR decay
+            'lr_decay': False,             # Enable linear LR decay
             'buffer_size': 4096,          # Collect experience
             'batch_size': 128,             # Smaller mini-batches for better convergence
             'K_epochs': 10,               # PPO update epochs
