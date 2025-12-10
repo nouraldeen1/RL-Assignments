@@ -115,7 +115,7 @@ def default_config_for_env(env_name):
     elif env_name == 'CarRacing-v3':
         return {
             # "Exploration Booster" config for CarRacing-v3 - Escape negative reward trap
-            'learning_rate': 1e-3,        # Increased from 3e-4 for faster learning
+            'learning_rate': 4e-4,        # Increased from 3e-4 for faster learning
             'lr_decay': False,            # No LR decay for CarRacing
             'gamma': 0.99,
             'gae_lambda': 0.95,
@@ -357,18 +357,21 @@ def train(env_name, algo, episodes, save_dir='ASS4/saved_models', use_wandb=Fals
 
     env.close()
     
-    # Save final model only if no checkpoint was saved during training
-    if not checkpoint_saved:
-        final_save_path = os.path.join(save_dir, f"{algo}_{env_name}_ass4_final.pth")
-        agent.save(final_save_path)
-        print(f"No checkpoint reached Avg50 >= 200. Final model saved to {final_save_path}")
-        if use_wandb and (wandb is not None):
-            try:
-                wandb.save(final_save_path)
-            except Exception:
-                print("Warning: failed to save final model to wandb")
+    # Always save final model at end of training
+    final_save_path = os.path.join(save_dir, f"{algo}_{env_name}_final_avg50_{recent_avg:.2f}.pth")
+    agent.save(final_save_path)
+    print(f"Training complete. Final model saved to {final_save_path}")
+    if use_wandb and (wandb is not None):
+        try:
+            wandb.save(final_save_path)
+        except Exception:
+            print("Warning: failed to save final model to wandb")
+    
+    if checkpoint_saved:
+        print(f"Best checkpoint also saved with Avg50: {best_avg50:.2f}")
+        best_model_path = os.path.join(save_dir, f"{algo}_{env_name}_avg50_{best_avg50:.2f}.pth")
     else:
-        print(f"Best checkpoint already saved with Avg50: {best_avg50:.2f}")
+        best_model_path = None
     
     if use_wandb and (wandb is not None):
         try:
@@ -377,7 +380,7 @@ def train(env_name, algo, episodes, save_dir='ASS4/saved_models', use_wandb=Fals
             pass
     print("Training finished")
     
-    return agent, save_dir, algo, env_name, episode_rewards
+    return agent, save_dir, algo, env_name, episode_rewards, best_model_path
 
 
 def plot_training_rewards(episode_rewards, env_name, algo='PPO', save_dir='ASS4/saved_models'):
@@ -765,7 +768,7 @@ if __name__ == '__main__':
         print("Quality: Maintained through frame skip and smart termination")
         print("="*60 + "\n")
 
-    agent, save_dir, algo, env_name, episode_rewards = train(args.env, args.algo, args.episodes, use_wandb=args.use_wandb)
+    agent, save_dir, algo, env_name, episode_rewards, best_model_path = train(args.env, args.algo, args.episodes, use_wandb=args.use_wandb)
     
     # Plot training rewards
     plot_training_rewards(episode_rewards, env_name, algo, save_dir)
@@ -776,6 +779,13 @@ if __name__ == '__main__':
     # Test the trained model (with optional video recording)
     test_avg_reward = None
     if not args.skip_test:
+        # Load the best checkpoint if it exists, otherwise use the current agent
+        if best_model_path and os.path.exists(best_model_path):
+            print(f"\nLoading best checkpoint for testing: {best_model_path}")
+            agent.load(best_model_path)
+        else:
+            print("\nNo checkpoint saved during training. Testing with final model.")
+        
         test_rewards, test_avg_reward = test(
             agent, 
             env_name, 

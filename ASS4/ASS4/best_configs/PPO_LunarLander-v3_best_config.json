@@ -1,7 +1,7 @@
 {
   "env_name": "LunarLander-v3",
   "algorithm": "PPO",
-  "test_avg_reward": 196.55925560965272,
+  "test_avg_reward": 163.58032944847182,
   "config": {
     "learning_rate": 0.00025,
     "lr_decay": true,
