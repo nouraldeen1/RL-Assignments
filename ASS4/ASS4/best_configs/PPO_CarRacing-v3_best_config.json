@@ -1,0 +1,47 @@
+{
+  "env_name": "CarRacing-v3",
+  "algorithm": "PPO",
+  "test_avg_reward": 747.052196507812,
+  "config": {
+    "learning_rate": 0.0003,
+    "lr_decay": true,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "batch_size": 256,
+    "buffer_size": 4096,
+    "eps_clip": 0.2,
+    "K_epochs": 4,
+    "entropy_coef": 0.01,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "hidden_dim": 256,
+    "frame_skip": 4,
+    "early_stop_threshold": -100,
+    "negative_reward_patience": 100,
+    "use_grayscale": true,
+    "crop_observation": true,
+    "downsample_size": [
+      64,
+      64
+    ],
+    "use_discrete_actions": true,
+    "reward_shaping": true,
+    "policy_kwargs": {
+      "features_extractor_kwargs": {
+        "features_dim": 512
+      },
+      "net_arch": [
+        {
+          "pi": [
+            256,
+            256
+          ],
+          "vf": [
+            256,
+            256
+          ]
+        }
+      ]
+    }
+  }
+}

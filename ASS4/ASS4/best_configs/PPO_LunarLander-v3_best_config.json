@@ -1,10 +1,10 @@
 {
   "env_name": "LunarLander-v3",
   "algorithm": "PPO",
-  "test_avg_reward": 163.58032944847182,
+  "test_avg_reward": 206.90085278770212,
   "config": {
     "learning_rate": 0.00025,
-    "lr_decay": true,
+    "lr_decay": false,
     "buffer_size": 4096,
     "batch_size": 128,
     "K_epochs": 10,

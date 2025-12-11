@@ -38,21 +38,39 @@ class ActorCritic(nn.Module):
             else:
                 in_channels = shape[-1]
 
-            # Small conv encoder (mirrors ASS4 encoder topology)
+            # OPTIMIZED: Smaller CNN with fewer parameters for faster training
+            # Reduced channels: 32→16, 64→32, 128→64, 256→128 (4x fewer params)
+            # Still maintains good feature extraction capacity
             self.encoder = nn.Sequential(
-                nn.Conv2d(in_channels, 32, kernel_size=4, stride=2),
+                nn.Conv2d(in_channels, 16, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(16, 32, kernel_size=4, stride=2),
                 nn.ReLU(),
                 nn.Conv2d(32, 64, kernel_size=4, stride=2),
                 nn.ReLU(),
                 nn.Conv2d(64, 128, kernel_size=4, stride=2),
                 nn.ReLU(),
-                nn.Conv2d(128, 256, kernel_size=4, stride=2),
-                nn.ReLU(),
                 nn.Flatten(),
             )
 
             # Project conv features to encoder_feature_dim (like features_extractor.features_dim)
-            conv_out_size = 256 * 4 * 4
+            # Compute conv_out_size dynamically by passing a dummy tensor through the encoder.
+            # This ensures the linear layer matches the actual flattened conv output
+            # even when input image size changes (e.g. downsampled to 64x64).
+            try:
+                # Determine input spatial dims from state_dim tuple
+                if shape[0] in (1, 3):
+                    _, H, W = shape
+                else:
+                    H, W, _ = shape
+                dummy = torch.zeros(1, in_channels, H, W)
+                with torch.no_grad():
+                    conv_out = self.encoder(dummy)
+                conv_out_size = int(conv_out.view(1, -1).size(1))
+            except Exception:
+                # Fallback to conservative default if something goes wrong
+                conv_out_size = 128 * 4 * 4
+
             self.encoder_proj = nn.Sequential(
                 nn.Linear(conv_out_size, encoder_feature_dim),
                 nn.Tanh(),
@@ -136,6 +154,24 @@ class ActorCritic(nn.Module):
                 last_dim = h
             critic_layers.append(nn.Linear(last_dim, 1))
             self.critic = nn.Sequential(*critic_layers)
+        
+        # OPTIMIZATION: Orthogonal initialization for better training stability
+        # This helps with gradient flow and faster convergence
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Apply orthogonal initialization to linear layers."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                # Orthogonal initialization for hidden layers
+                nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
+            elif isinstance(module, nn.Conv2d):
+                # Orthogonal initialization for conv layers
+                nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
 
     def act(self, state, device):
         # Handle image inputs (ensure shape is BxCxHxW)
@@ -249,7 +285,8 @@ class ActorCritic(nn.Module):
             else:
                 action_logprobs = dist.log_prob(action)
                 dist_entropy = dist.entropy()
-                state_values = self.critic(state)
+                # Use extracted features for value prediction, not the raw image tensor
+                state_values = self.critic(feats)
                 return action_logprobs, state_values, dist_entropy
 
         else:
@@ -355,12 +392,22 @@ class PPOAgent:
             return 0.0
 
         # Convert buffer to tensors
-        old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0)).detach().to(self.device)
+        # CRITICAL: Don't use squeeze() for images - it removes channel dimension!
+        # For images with shape (N, 1, H, W) squeeze would give (N, H, W) - WRONG!
+        old_states = torch.stack(self.buffer.states, dim=0).detach().to(self.device)
+        if old_states.dim() == 2:  # Only squeeze for vector observations
+            old_states = torch.squeeze(old_states)
+        
         old_actions = torch.squeeze(torch.stack(self.buffer.actions, dim=0)).detach().to(self.device)
         old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach().to(self.device)
 
         rewards = torch.tensor(self.buffer.rewards, dtype=torch.float32).to(self.device)
         is_terminals = torch.tensor(self.buffer.is_terminals, dtype=torch.float32).to(self.device)
+        
+        # OPTIMIZATION: Reward normalization for stable learning
+        # Normalize rewards to reduce variance (only if we have enough samples)
+        if len(rewards) > 1:
+            rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
 
         # Get state values for all states (no grad)
         with torch.no_grad():
@@ -376,7 +423,7 @@ class PPOAgent:
                 next_non_terminal = 1.0 - is_terminals[t]
                 next_value = 0.0
             else:
-                next_non_terminal = 1.0 - is_terminals[t+1]
+                next_non_terminal = 1.0 - is_terminals[t]
                 next_value = state_values[t+1]
 
             delta = rewards[t] + self.gamma * next_value * next_non_terminal - state_values[t]
@@ -415,8 +462,19 @@ class PPOAgent:
 
                 # Policy loss
                 policy_loss = -torch.min(surr1, surr2).mean()
-                # Value loss
-                value_loss = self.MseLoss(state_values_new, mb_returns_flat)
+                
+                # OPTIMIZATION: Value function clipping for stability (like PPO paper)
+                # Prevents value function from changing too drastically
+                mb_old_values = state_values[mb_idx]
+                value_pred_clipped = mb_old_values + torch.clamp(
+                    state_values_new - mb_old_values,
+                    -self.eps_clip,
+                    self.eps_clip
+                )
+                value_loss_unclipped = self.MseLoss(state_values_new, mb_returns_flat)
+                value_loss_clipped = self.MseLoss(value_pred_clipped, mb_returns_flat)
+                value_loss = torch.max(value_loss_unclipped, value_loss_clipped)
+                
                 # Entropy
                 entropy_loss = dist_entropy.mean()
 
