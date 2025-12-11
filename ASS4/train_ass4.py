@@ -76,11 +76,7 @@ Supports:
     - Final size: 64x64 vs original 96x96 (2.25x fewer pixels)
     - Uses bilinear interpolation to preserve features
 
-15. **Discrete Action Wrapper** (Optional):
-    - Converts continuous actions to 9 discrete racing maneuvers
-    - Easier to learn than continuous action space
-    - Actions: idle, left, right, gas, brake, gas+turn, brake+turn
-    - Can be enabled with 'use_discrete_actions': True
+
 
 Combined CarRacing speedup: ~20-30x faster than baseline
 Complexity reduction: 64x64x1 vs 96x96x3 = 4.5x simpler input
@@ -173,37 +169,6 @@ def preprocess_obs(obs, grayscale=False, crop=True, downsample_size=None):
     
     return obs
 
-
-class DiscreteActionsWrapper(gym.ActionWrapper):
-    """Simplifies CarRacing continuous actions to 9 discrete actions.
-    
-    OPTIMIZATION: Discrete actions are easier to learn than continuous.
-    Predefined actions cover all common racing maneuvers:
-    0: Do nothing, 1: Steer left, 2: Steer right, 3: Gas,
-    4: Brake, 5: Gas+Left, 6: Gas+Right, 7: Brake+Left, 8: Brake+Right
-    """
-    def __init__(self, env):
-        super().__init__(env)
-        # Redefine action space as discrete
-        self.action_space = gym.spaces.Discrete(9)
-        
-        # Predefined actions: [steering, gas, brake]
-        self.actions = [
-            [0, 0, 0],      # 0: Do nothing
-            [-1, 0, 0],     # 1: Full left
-            [1, 0, 0],      # 2: Full right
-            [0, 1, 0],      # 3: Gas
-            [0, 0, 0.8],    # 4: Brake
-            [-0.6, 0.8, 0], # 5: Gas + slight left
-            [0.6, 0.8, 0],  # 6: Gas + slight right
-            [-0.6, 0, 0.5], # 7: Brake + slight left
-            [0.6, 0, 0.5],  # 8: Brake + slight right
-        ]
-    
-    def action(self, act):
-        """Convert discrete action to continuous."""
-        # Return as numpy array with proper dtype so inner env.step can call .astype
-        return np.array(self.actions[act], dtype=np.float64)
 
 
 def is_image_shape(shape):

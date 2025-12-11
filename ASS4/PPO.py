@@ -5,28 +5,50 @@ from torch.distributions import MultivariateNormal, Categorical, Normal
 import numpy as np
 import numpy as np
 
+# =================================================================================================
+# -- Memory Buffer --
+# This class defines a buffer to store the experiences collected during a rollout phase.
+# A rollout is a sequence of interactions with the environment (state, action, reward, etc.)
+# until a certain number of steps is reached. The collected data is then used for training.
+# =================================================================================================
 class PPOMemory:
     def __init__(self):
-        self.actions = []
+        # List to store states encountered
         self.states = []
+        # List to store actions taken
+        self.actions = []
+        # List to store the log probability of the actions taken
         self.logprobs = []
+        # List to store rewards received
         self.rewards = []
+        # List to store whether the state was a terminal state (end of episode)
         self.is_terminals = []
     
     def clear_memory(self):
+        # Clear all lists to prepare for the next rollout
         del self.actions[:]
         del self.states[:]
         del self.logprobs[:]
         del self.rewards[:]
         del self.is_terminals[:]
 
+# =================================================================================================
+# -- Actor-Critic Network --
+# This class defines the neural network architecture. It's called "Actor-Critic" because it has
+# two main components (or "heads"):
+# 1. The Actor: The policy network, which decides which action to take (outputs action probabilities or means).
+# 2. The Critic: The value network, which estimates the value of a given state (outputs a single value, V(s)).
+# For image-based environments, it also includes a CNN encoder to extract features from pixels.
+# =================================================================================================
 class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dim, is_continuous, hidden_dim=256, action_std_init=0.6, encoder_feature_dim=256, net_arch=None):
         super(ActorCritic, self).__init__()
         self.is_continuous = is_continuous
         self.action_dim = action_dim
+        # Check if the state is an image (represented by a tuple like (H, W, C)) or a vector.
         self.is_image = isinstance(state_dim, (tuple, list))
 
+        # --- Encoder for Image-based States (e.g., CarRacing) ---
         if self.is_image:
             # state_dim can be (H,W,C) or (C,H,W). Detect channels.
             shape = tuple(state_dim)
@@ -38,9 +60,8 @@ class ActorCritic(nn.Module):
             else:
                 in_channels = shape[-1]
 
-            # OPTIMIZED: Smaller CNN with fewer parameters for faster training
-            # Reduced channels: 32→16, 64→32, 128→64, 256→128 (4x fewer params)
-            # Still maintains good feature extraction capacity
+            # OPTIMIZATION: A smaller CNN with fewer parameters for faster training and less memory usage.
+            # This is crucial for environments like CarRacing to make training feasible on consumer hardware.
             self.encoder = nn.Sequential(
                 nn.Conv2d(in_channels, 16, kernel_size=4, stride=2),
                 nn.ReLU(),
@@ -53,22 +74,24 @@ class ActorCritic(nn.Module):
                 nn.Flatten(),
             )
 
-            # Project conv features to encoder_feature_dim (like features_extractor.features_dim)
-            # Compute conv_out_size dynamically by passing a dummy tensor through the encoder.
-            # This ensures the linear layer matches the actual flattened conv output
-            # even when input image size changes (e.g. downsampled to 64x64).
+            # Project the flattened features from the CNN encoder to a fixed-size feature vector.
+            # BUGFIX/IMPROVEMENT: We compute the output size of the CNN dynamically.
+            # This is critical because if the input image size changes (e.g., due to preprocessing),
+            # a hardcoded size would cause a tensor shape mismatch error.
             try:
                 # Determine input spatial dims from state_dim tuple
                 if shape[0] in (1, 3):
                     _, H, W = shape
                 else:
                     H, W, _ = shape
+                # Create a dummy tensor with the same dimensions as a single observation
                 dummy = torch.zeros(1, in_channels, H, W)
                 with torch.no_grad():
+                    # Pass the dummy tensor through the encoder to find the output shape
                     conv_out = self.encoder(dummy)
                 conv_out_size = int(conv_out.view(1, -1).size(1))
             except Exception:
-                # Fallback to conservative default if something goes wrong
+                # Fallback to a conservative default if the dynamic calculation fails
                 conv_out_size = 128 * 4 * 4
 
             self.encoder_proj = nn.Sequential(
@@ -76,7 +99,8 @@ class ActorCritic(nn.Module):
                 nn.Tanh(),
             )
 
-            # Use net_arch if provided (SB3 style: dict with keys 'pi' and 'vf')
+            # --- Actor and Critic Heads (for Image States) ---
+            # Allow for custom network architectures, similar to Stable-Baselines3 (SB3).
             pi_arch = None
             vf_arch = None
             if isinstance(net_arch, dict):
@@ -84,36 +108,42 @@ class ActorCritic(nn.Module):
                 vf_arch = net_arch.get('vf', None)
 
             feat_dim = encoder_feature_dim
-            # Build actor head
+            # Build the Actor (policy) head
             actor_layers = []
             last_dim = feat_dim
+            # Use the custom architecture if provided, otherwise default to [hidden_dim, hidden_dim]
             arch = pi_arch if pi_arch is not None else [hidden_dim, hidden_dim]
             for h in arch:
                 actor_layers.append(nn.Linear(last_dim, h))
                 actor_layers.append(nn.Tanh())
                 last_dim = h
             actor_layers.append(nn.Linear(last_dim, action_dim))
-            # For continuous actions we output the mean (unbounded) and perform
-            # tanh squashing after sampling; do NOT append final Tanh here.
+            # For continuous actions, the network outputs the mean of a Gaussian distribution.
+            # The standard deviation is a separate trainable parameter.
+            # We use a "Squashed Gaussian" policy, where actions are sampled and then passed through tanh.
             if is_continuous:
                 self.action_var = torch.full((action_dim,), action_std_init * action_std_init)
+            # For discrete actions, the network outputs logits, followed by a Softmax to get probabilities.
             else:
                 actor_layers.append(nn.Softmax(dim=-1))
             self.actor = nn.Sequential(*actor_layers)
 
-            # Build critic head
+            # Build the Critic (value) head
             critic_layers = []
             last_dim = feat_dim
+            # Use the custom architecture if provided, otherwise default to [hidden_dim, hidden_dim]
             arch = vf_arch if vf_arch is not None else [hidden_dim, hidden_dim]
             for h in arch:
                 critic_layers.append(nn.Linear(last_dim, h))
                 critic_layers.append(nn.Tanh())
                 last_dim = h
+            # The critic always outputs a single value: the estimated return from the current state.
             critic_layers.append(nn.Linear(last_dim, 1))
             self.critic = nn.Sequential(*critic_layers)
 
+        # --- MLP for Vector-based States (e.g., LunarLander) ---
         else:
-            # MLP path for vector observations - use net_arch if provided
+            # This path is for environments where the state is a simple vector of numbers.
             pi_arch = None
             vf_arch = None
             if isinstance(net_arch, dict):
@@ -155,70 +185,87 @@ class ActorCritic(nn.Module):
             critic_layers.append(nn.Linear(last_dim, 1))
             self.critic = nn.Sequential(*critic_layers)
         
-        # OPTIMIZATION: Orthogonal initialization for better training stability
-        # This helps with gradient flow and faster convergence
+        # OPTIMIZATION: Orthogonal initialization is a best practice for policy gradients.
+        # It helps prevent gradients from exploding or vanishing, leading to more stable training.
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """Apply orthogonal initialization to linear layers."""
+        """Apply orthogonal initialization to all linear and convolutional layers."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                # Orthogonal initialization for hidden layers
+                # Initialize weights with a gain of sqrt(2), recommended for ReLU activations.
                 nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0.0)
             elif isinstance(module, nn.Conv2d):
-                # Orthogonal initialization for conv layers
+                # Also apply to convolutional layers.
                 nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0.0)
 
     def act(self, state, device):
-        # Handle image inputs (ensure shape is BxCxHxW)
+        # This method is called during data collection (rollout) to select an action.
+        # It uses the "old" policy weights. No gradients are computed here.
+        
+        # --- Image State Handling ---
         if self.is_image:
-            # if incoming state is a single image tensor without batch dim
+            # Ensure the input tensor has the correct shape (Batch, Channels, Height, Width).
             if state.dim() == 3:
-                # try to detect channel position
+                # If a single image is passed, add a batch dimension.
                 if state.shape[0] in (1, 3):
                     img = state.unsqueeze(0)
                 else:
-                    # assume HWC -> CHW
+                    # If channels are last (H, W, C), permute to (C, H, W).
                     img = state.permute(2, 0, 1).unsqueeze(0)
             else:
                 img = state
 
-            # CRITICAL: Normalize image to [0, 1] range
+            # CRITICAL: Normalize image pixel values from [0, 255] to [0, 1].
             if img.max() > 1.0:
                 img = img / 255.0
             
+            # Pass the image through the CNN encoder and projection layer to get features.
             feats_conv = self.encoder(img.to(device))
             feats = self.encoder_proj(feats_conv)
+
+            # --- Action Sampling ---
             if self.is_continuous:
-                # Squashed Gaussian: sample pre-tanh, then tanh squashing
+                # Squashed Gaussian Policy:
+                # 1. The actor outputs the mean of a Normal distribution.
                 action_mean = self.actor(feats)
                 action_std = torch.sqrt(self.action_var).to(device)
                 normal = Normal(action_mean, action_std)
+                # 2. Sample from the distribution. This is the "pre-tanh" action.
                 pre_tanh = normal.rsample()
+                # 3. Squash the sample into the range [-1, 1] using the tanh function.
                 action = torch.tanh(pre_tanh)
-                # log_prob with change of variables: log N(pre_tanh) - sum log(1 - tanh(pre_tanh)^2)
+                # 4. Calculate the log probability. This requires the change of variables formula
+                #    to account for the tanh squashing, which makes it more complex.
                 log_prob_pre = normal.log_prob(pre_tanh).sum(-1)
-                # numerical stability
-                eps = 1e-6
+                eps = 1e-6 # For numerical stability
                 log_det = torch.log(1 - action.pow(2) + eps).sum(-1)
                 action_logprob = log_prob_pre - log_det
+                # The critic estimates the value from the extracted features.
                 state_val = self.critic(feats)
-            else:
+            else: # Discrete actions
+                # 1. The actor outputs probabilities for each action.
                 action_probs = self.actor(feats)
+                # 2. A Categorical distribution is created from these probabilities.
                 dist = Categorical(action_probs)
+                # 3. Sample an action from the distribution.
                 action = dist.sample()
+                # 4. Get the log probability of the sampled action.
                 action_logprob = dist.log_prob(action)
                 state_val = self.critic(feats)
 
             if self.is_continuous:
+                # Return the final action, its logprob, the state value, and the pre-tanh action.
+                # The pre-tanh action is stored in the buffer for the update step.
                 return action.detach().squeeze(0), action_logprob.detach().squeeze(0), state_val.detach().squeeze(0), pre_tanh.detach().squeeze(0)
             else:
                 return action.detach().squeeze(0), action_logprob.detach().squeeze(0), state_val.detach().squeeze(0)
 
+        # --- Vector State Handling ---
         else:
             if self.is_continuous:
                 action_mean = self.actor(state)
